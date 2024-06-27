@@ -26,6 +26,7 @@ from packaging.version import Version
 from pathlib import Path
 import appdirs
 from git import Repo, InvalidGitRepositoryError, Tag
+from urllib.parse import urlparse
 import json
 import click
 import re
@@ -113,7 +114,7 @@ def generate_changelog(
     prev_ver: Version | None,
     cur_ver: Version,
     fetch: bool = True,
-) -> list[str]:
+) -> tuple[str, list[str]]:
     res = []
     repo = get_package_repo(package)
     repo_url = list(repo.remote("origin").urls)[0]
@@ -135,7 +136,7 @@ def generate_changelog(
         commit_range = f"{prev_tag}...{cur_tag}"
     for c in repo.iter_commits(commit_range):
         res.append(c.message)
-    return res
+    return repo_url, res
 
 
 def get_package_repo(package: str) -> Repo:
@@ -216,14 +217,20 @@ def main_cli(
     changed_deps = diff_deps(repo, lockfile, since, until)
     message_filter = message_filter and re.compile(message_filter)
     package_filter = package_filter and re.compile(package_filter)
+    issue_ref_regex = re.compile(r"(\(| )(#\d+)")
     for package, (prev_ver, cur_ver) in changed_deps.items():
         if package_filter and not package_filter.search(package):
             continue
 
         try:
-            changes = generate_changelog(package, prev_ver, cur_ver)
+            repo_url, changes = generate_changelog(package, prev_ver, cur_ver)
+            repo_name = urlparse(repo_url).path[1:].removesuffix(".git")
+
             if message_filter:
                 changes = [c for c in changes if not message_filter.search(c)]
+
+            # Rewrite "closes #123" to "closes {repo_full_name}#123"
+            changes = [issue_ref_regex.sub(rf"\1{repo_name}\2", c) for c in changes]
 
             if prev_ver is None:
                 bump_icon = "✨"
