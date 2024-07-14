@@ -232,6 +232,7 @@ def main_cli(
             # Rewrite "closes #123" to "closes {repo_full_name}#123"
             changes = [issue_ref_regex.sub(rf"\1{repo_name}\2", c) for c in changes]
 
+            bump_icon = ""
             if prev_ver is None:
                 bump_icon = "✨"
             elif prev_ver.major < cur_ver.major:
