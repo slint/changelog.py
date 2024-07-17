@@ -135,7 +135,7 @@ def generate_changelog(
     else:
         commit_range = f"{prev_tag}...{cur_tag}"
     for c in repo.iter_commits(commit_range):
-        res.append(c.message)
+        res.append(c.message.strip())
     return repo_url, res
 
 
@@ -246,7 +246,7 @@ def main_cli(
                 underline=True,
                 file=output,
             )
-            changelist = textwrap.indent("".join(changes), "    ")
+            changelist = textwrap.indent("\n".join(changes), "    ")
             changelist = "\n".join(
                 [l for l in changelist.splitlines() if "co-authored" not in l.lower()]
             )
