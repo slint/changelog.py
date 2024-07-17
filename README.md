@@ -4,7 +4,17 @@ Generate a changelog summary from changes in Python dependencies.
 
 ## Installation
 
+Make sure you have [`pipx`](https://pipx.pypa.io/stable/) installed.
+
 ```bash
+# Clone this repo (or directly download `changelog.py`)
+git clone git@github.com:slint/changelog.py.git
+cd changelog.py
+
+# Make sure `changelog.py` is in your PATH (e.g. via symlinking)
+ln -s "$(realpath changelog.py)" "$HOME/.local/bin/changelog.py"
+
+# In the future you'll be able to install from PyPI like:
 pipx install changelog.py
 ```
 
@@ -15,6 +25,9 @@ Or if you're a fan of `pipx run`, you can just download the `changelog.py` scrip
 ```bash
 # Running the following in a local clone of https://github.com/zenodo/zenodo-rdm
 changelog.py --package-filter "invenio" --since v7.3.0 --until v7.4.0
+
+# ...or e.g. if you have local changes
+changelog.py --package-filter "invenio" --since HEAD^
 ```
 
 will output:
