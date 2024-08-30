@@ -105,7 +105,8 @@ def repo_tag(repo: Repo, version: Version, fetch: bool = True) -> Tag | None:
             return t
     if fetch:
         click.secho(f"Fetching {repo}...", fg="yellow", err=True)
-        repo.remote("origin").fetch("+refs/heads/*:refs/heads/*", filter="blob:none")
+        for remote in repo.remotes:
+            remote.fetch("+refs/heads/*:refs/heads/*", filter="blob:none")
         return repo_tag(repo, version, fetch=False)
 
 
@@ -156,7 +157,13 @@ def get_package_repo(package: str) -> Repo:
     repo_dir = GIT_REPOS_DIR / f"{package}.git"
     if not repo_dir.exists():
         repo_dir.mkdir(parents=True)
-        repo = Repo.clone_from(repo_url, repo_dir, bare=True, filter="blob:none")
+        repo = Repo.clone_from(
+            repo_url,
+            repo_dir,
+            origin="origin",
+            bare=True,
+            filter="blob:none",
+        )
     else:
         repo = Repo(repo_dir)
     return repo
