@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run
 # /// script
-# requires-python = ">=3.9"
+# requires-python = ">=3.12"
 # dependencies = [
 #   "appdirs",
 #   "click",
@@ -241,15 +241,19 @@ def main_cli(
 
             bump_icon = ""
             if prev_ver is None:
-                bump_icon = "✨"
+                bump_icon = " ✨"
             elif prev_ver.major < cur_ver.major:
-                bump_icon = "⚠️"
+                bump_icon = " ⚠️"
             elif prev_ver.minor < cur_ver.minor:
-                bump_icon = "🌈"
+                bump_icon = " 🌈"
             elif prev_ver.micro < cur_ver.micro:
-                bump_icon = "🐛"
+                bump_icon = " 🐛"
+            elif prev_ver.pre is not None and prev_ver.pre < cur_ver.pre:
+                bump_icon = " ⚠️"
+            elif prev_ver.dev is not None and prev_ver.dev < cur_ver.dev:
+                bump_icon = " 🌈"
             click.secho(
-                f"\n📁 {package} ({prev_ver} -> {cur_ver} {bump_icon})\n",
+                f"\n📁 {package} ({prev_ver} -> {cur_ver}{bump_icon})\n",
                 underline=True,
                 file=output,
             )
