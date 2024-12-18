@@ -2,9 +2,15 @@
 
 Generate a changelog summary from changes in Python dependencies.
 
+This script compares your `requirements.txt` or `Pipfile.lock`
+with its previously committed state to determines what packages have
+been updated. It then fetches the commit history for each package
+and generates a nicely formatted changelog to help you understand
+if there are breaking changes, new features, bug fixes, etc.
+
 ## Installation
 
-Make sure you have [`pipx`](https://pipx.pypa.io/stable/) installed.
+Make sure you have [`uv`](https://docs.astral.sh/uv/getting-started/installation/) installed.
 
 ```bash
 # Clone this repo (or directly download `changelog.py`)
@@ -13,12 +19,7 @@ cd changelog.py
 
 # Make sure `changelog.py` is in your PATH (e.g. via symlinking)
 ln -s "$(realpath changelog.py)" "$HOME/.local/bin/changelog.py"
-
-# In the future you'll be able to install from PyPI like:
-pipx install changelog.py
 ```
-
-Or if you're a fan of `pipx run`, you can just download the `changelog.py` script, `chomd +x ...`, and run it as any normal script in your path.
 
 ## Usage
 
@@ -27,10 +28,10 @@ Or if you're a fan of `pipx run`, you can just download the `changelog.py` scrip
 changelog.py --package-filter "invenio" --since v7.3.0 --until v7.4.0
 
 # ...or e.g. if you have local changes
-changelog.py --package-filter "invenio" --since HEAD^
+changelog.py --package-filter "invenio" --since HEAD
 ```
 
-will output:
+...will output:
 
 ```
 📁 invenio-app-rdm (13.0.0b0.dev3 -> 13.0.0b0.dev4 )
