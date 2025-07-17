@@ -109,6 +109,75 @@ def diff_deps(
     return changed_deps
 
 
+def format_changelist(changes: list[str], message_filter: re.Pattern | None) -> str:
+    """Format a list of changes into a nicely formatted changelist string."""
+    if message_filter:
+        changes = [c for c in changes if not message_filter.search(c)]
+    
+    changelist = textwrap.indent("\n".join(changes), "    ")
+    changelist = "\n".join(
+        [line for line in changelist.splitlines() if "co-authored" not in line.lower()]
+    )
+    return changelist
+
+
+def get_bump_icon(prev_ver: Version | None, cur_ver: Version) -> str:
+    """Get the appropriate emoji icon for a version bump."""
+    if prev_ver is None:
+        return " ✨"
+    elif prev_ver.major < cur_ver.major:
+        return " ⚠️"
+    elif prev_ver.minor < cur_ver.minor:
+        return " 🌈"
+    elif prev_ver.micro < cur_ver.micro:
+        return " 🐛"
+    elif (
+        prev_ver.pre is not None
+        and cur_ver.pre is not None
+        and prev_ver.pre < cur_ver.pre
+    ):
+        return " 🚀"
+    elif (
+        prev_ver.dev is not None
+        and cur_ver.dev is not None
+        and prev_ver.dev < cur_ver.dev
+    ):
+        return " 🚀"
+    return ""
+
+
+def get_unreleased_deps(
+    lockfile: Path, package_filter: re.Pattern | None, fetch: bool = False
+) -> dict[str, list[str]]:
+    """Get commits for unreleased dependencies."""
+    cur_deps_data = lockfile.read_text()
+    cur_deps = deps_from_lockfile(lockfile, cur_deps_data)
+    if package_filter:
+        cur_deps = {k: v for k, v in cur_deps.items() if package_filter.search(k)}
+
+    res = {}
+
+    with click.progressbar(
+        cur_deps.items(),
+        label="Fetching commits...",
+        item_show_func=lambda i: i and i[0],
+    ) as bar:
+        for package, version in bar:
+            repo = get_package_repo(package)
+            # Fetch the latest heads
+            if fetch:
+                for remote in repo.remotes:
+                    remote.fetch("+refs/heads/*:refs/heads/*", filter="blob:none")
+            cur_tag = repo_tag(repo, version, fetch=False)  # no need to fetch again
+            if not cur_tag:
+                raise ValueError(f"Tag for {version} not found in {repo}.")
+
+            for c in repo.iter_commits(f"{cur_tag}..HEAD"):
+                res.setdefault(package, [])
+                res[package].append(c.message.strip())
+    return res
+
+
 def repo_tag(repo: Repo, version: Version, fetch: bool = True) -> Tag | None:
     """Get the version of a tag in the repository."""
     repo_tags = repo.tags
@@ -157,6 +226,27 @@ def generate_changelog(
     return repo_url, res
 
 
+def run_unreleased_mode(
+    lockfile: Path,
+    package_filter: re.Pattern | None,
+    message_filter: re.Pattern | None,
+    fetch: bool,
+    output
+) -> None:
+    """Run the changelog generator in unreleased mode."""
+    unreleased_deps = get_unreleased_deps(
+        lockfile, package_filter, fetch=fetch
+    )
+    
+    for package, changes in unreleased_deps.items():
+        changelist = format_changelist(changes, message_filter)
+        if not changelist.strip():
+            continue
+
+        click.secho(f"\n📁 {package} (unreleased)\n", underline=True, file=output)
+        click.echo(changelist, file=output)
+
+
 def get_package_repo(package: str) -> Repo:
     """Clone the dependency repository."""
     # Sometimes Python deps are available both using underscores ("_"), but their
@@ -186,66 +276,20 @@ def get_package_repo(package: str) -> Repo:
     return repo
 
 
-@click.command()
-@click.argument(
-    "lockfile",
-    required=False,
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    default=None,
-)
-# TODO: See if could support shell completion for "commit-ish" arguments.
-@click.option("--since", default=None, help="The tag or commit to start from.")
-@click.option("--until", default=None, help="The tag or commit to end at.")
-@click.option(
-    "--package-filter",
-    default=None,
-    help="A regular expression to filter the changelog entries.",
-)
-@click.option(
-    "--message-filter",
-    default=r"(tests?|chore)\:",
-    help="A regular expression to filter commit message entries.",
-)
-@click.option(
-    "--show-major-bumps",
-    is_flag=True,
-    help="Show major version bumps (breaking changes) of all dependencies, even if they don't match the package filter.",
-)
-@click.option("--lockfile", default=None, help="The file to write the changelog to.")
-@click.option(
-    "--output",
-    type=click.File("w"),
-    default="-",
-    help="The file to write the changelog to.",
-)
-@click.option("--cache-dir", is_flag=True, help="Print the cache directory.")
-def main_cli(
-    lockfile,
-    since,
-    until,
-    package_filter,
-    message_filter,
-    show_major_bumps,
-    output,
-    cache_dir,
-):
-    """Run the changelog generator."""
-    if cache_dir:
-        click.echo(CACHE_DIR)
-        return
-
-    lockfile = lockfile or next((Path(p) for p in LOCKFILES if Path(p).exists()), None)
-    if not lockfile:
-        raise click.UsageError(f"No lock file found ({','.join(LOCKFILES)}).")
-
-    if not (repo := find_repo(lockfile)):
-        raise click.ClickException("Could not find git repository of lockfile.")
-
+def run_normal_mode(
+    repo: Repo,
+    lockfile: Path,
+    since: str | None,
+    until: str | None,
+    package_filter: re.Pattern | None,
+    message_filter: re.Pattern | None,
+    show_major_bumps: bool,
+    output
+) -> None:
+    """Run the changelog generator in normal mode."""
     changed_deps = diff_deps(repo, lockfile, since, until)
-    message_filter = message_filter and re.compile(message_filter)
-    package_filter = package_filter and re.compile(package_filter)
     issue_ref_regex = re.compile(r"(\(| )(#\d+)")
-
+    
     # Separate packages into filtered and major bumps
     filtered_packages = []
     major_bump_packages = []
@@ -267,47 +311,18 @@ def main_cli(
             repo_url, changes = generate_changelog(package, prev_ver, cur_ver)
             repo_name = urlparse(repo_url).path[1:].removesuffix(".git")
 
-            if message_filter:
-                changes = [c for c in changes if not message_filter.search(c)]
-
             # Rewrite "closes #123" to "closes {repo_full_name}#123"
             changes = [issue_ref_regex.sub(rf"\1{repo_name}\2", c) for c in changes]
 
-            bump_icon = ""
-            if prev_ver is None:
-                bump_icon = " ✨"
-            elif prev_ver.major < cur_ver.major:
-                bump_icon = " ⚠️"
-            elif prev_ver.minor < cur_ver.minor:
-                bump_icon = " 🌈"
-            elif prev_ver.micro < cur_ver.micro:
-                bump_icon = " 🐛"
-            elif (
-                prev_ver.pre is not None
-                and cur_ver.pre is not None
-                and prev_ver.pre < cur_ver.pre
-            ):
-                bump_icon = " 🚀"
-            elif (
-                prev_ver.dev is not None
-                and cur_ver.dev is not None
-                and prev_ver.dev < cur_ver.dev
-            ):
-                bump_icon = " 🚀"
+            bump_icon = get_bump_icon(prev_ver, cur_ver)
             click.secho(
                 f"\n📁 {package} ({prev_ver} -> {cur_ver}{bump_icon})\n",
                 underline=True,
                 file=output,
             )
-            changelist = textwrap.indent("\n".join(changes), "    ")
-            changelist = "\n".join(
-                [
-                    line
-                    for line in changelist.splitlines()
-                    if "co-authored" not in line.lower()
-                ]
-            )
-            click.echo(changelist)
+            
+            changelist = format_changelist(changes, message_filter)
+            click.echo(changelist, file=output)
         except Exception as e:
             click.secho(f"Error generating changelog for {package}: {e}", err=True)
 
@@ -323,6 +338,77 @@ def main_cli(
                 f"📁 {package} ({prev_ver} -> {cur_ver} ⚠️)",
                 file=output,
             )
+
+
+@click.command()
+@click.argument(
+    "lockfile",
+    required=False,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+)
+# TODO: See if could support shell completion for "commit-ish" arguments.
+@click.option("--since", default=None, help="The tag or commit to start from.")
+@click.option("--until", default=None, help="The tag or commit to end at.")
+@click.option(
+    "--package-filter",
+    default=None,
+    help="A regular expression to filter the changelog entries.",
+)
+@click.option(
+    "--message-filter",
+    default=r"(tests?|chore|i18n|ci)\:",
+    help="A regular expression to filter commit message entries.",
+)
+@click.option(
+    "--show-major-bumps",
+    is_flag=True,
+    help="Show major version bumps (breaking changes) of all dependencies, even if they don't match the package filter.",
+)
+@click.option("--lockfile", default=None, help="The file to write the changelog to.")
+@click.option(
+    "--output",
+    type=click.File("w"),
+    default="-",
+    help="The file to write the changelog to.",
+)
+@click.option(
+    "--unreleased", is_flag=True, help="Generate the changelog for unreleased."
+)
+@click.option("--fetch", is_flag=True, help="Fetch the latest commits.")
+@click.option("--cache-dir", is_flag=True, help="Print the cache directory.")
+def main_cli(
+    lockfile,
+    since,
+    until,
+    package_filter,
+    message_filter,
+    show_major_bumps,
+    output,
+    unreleased,
+    fetch,
+    cache_dir,
+):
+    """Run the changelog generator."""
+    if cache_dir:
+        click.echo(CACHE_DIR)
+        return
+
+    lockfile = Path(lockfile) if lockfile else next((Path(p) for p in LOCKFILES if Path(p).exists()), None)
+    if not lockfile:
+        raise click.UsageError(f"No lock file found ({','.join(LOCKFILES)}).")
+
+    if not (repo := find_repo(lockfile)):
+        raise click.ClickException("Could not find git repository of lockfile.")
+
+    message_filter = message_filter and re.compile(message_filter)
+    package_filter = package_filter and re.compile(package_filter)
+
+    # Dispatch to appropriate mode
+    if unreleased:
+        run_unreleased_mode(lockfile, package_filter, message_filter, fetch, output)
+    else:
+        run_normal_mode(repo, lockfile, since, until, package_filter, message_filter, show_major_bumps, output)
 
 
 if __name__ == "__main__":
