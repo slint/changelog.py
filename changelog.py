@@ -11,7 +11,7 @@
 """Changelog generator based on dependency changes.
 
 This script generates a changelog based on the upgraded dependencies tracked via a
-version-controlled Python requirements lock file (`Pipfile.lock`, `requirements.txt`).
+version-controlled Python requirements lock file (`Pipfile.lock`, `requirements.txt`, or `uv.lock`).
 
 The script uses `git` to determine the changes made to the lock file in the current
 commit. It then inspects the updated dependencies and generates a changelog based on
@@ -31,6 +31,7 @@ import json
 import click
 import re
 import textwrap
+import tomllib
 
 
 CACHE_DIR = Path(appdirs.user_cache_dir("slint.changelog.py"))
@@ -49,7 +50,7 @@ def find_repo(lockfile: Path, depth=2) -> Repo | None:
 
 def deps_from_lockfile(lockfile: Path, data: str) -> dict[str, Version]:
     deps = {}
-    if lockfile.match("Pipfile.lock"):
+    if lockfile.name == "Pipfile.lock":
         for package, info in json.loads(data)["default"].items():
             if "version" in info:
                 deps[package] = info["version"].replace("==", "")
@@ -60,6 +61,14 @@ def deps_from_lockfile(lockfile: Path, data: str) -> dict[str, Version]:
                 continue
             package, version = line.split("==")
             deps[package] = version
+    elif lockfile.name == "uv.lock":
+        lock_data = tomllib.loads(data)
+        # Parse packages from uv.lock format
+        for package_info in lock_data.get("package", []):
+            name = package_info.get("name")
+            version = package_info.get("version")
+            if name and version:
+                deps[name] = version
 
     return {canonicalize_name(k): Version(v) for k, v in deps.items()}
 
@@ -212,11 +221,11 @@ def main_cli(
         return
 
     lockfile = lockfile or next(
-        (Path(p) for p in ("Pipfile.lock", "requirements.txt") if Path(p).exists()),
+        (Path(p) for p in ("uv.lock", "Pipfile.lock", "requirements.txt") if Path(p).exists()),
         None,
     )
     if not lockfile:
-        raise click.UsageError("No lock file found (Pipfile.lock or requirements.txt).")
+        raise click.UsageError("No lock file found (uv.lock, Pipfile.lock, or requirements.txt).")
 
     if not (repo := find_repo(lockfile)):
         raise click.ClickException("Could not find git repository of lockfile.")
@@ -248,10 +257,12 @@ def main_cli(
                 bump_icon = " 🌈"
             elif prev_ver.micro < cur_ver.micro:
                 bump_icon = " 🐛"
-            elif prev_ver.pre is not None and prev_ver.pre < cur_ver.pre:
-                bump_icon = " ⚠️"
-            elif prev_ver.dev is not None and prev_ver.dev < cur_ver.dev:
-                bump_icon = " 🌈"
+            elif (prev_ver.pre is not None and cur_ver.pre is not None and 
+                  prev_ver.pre < cur_ver.pre):
+                bump_icon = " 🚀"
+            elif (prev_ver.dev is not None and cur_ver.dev is not None and 
+                  prev_ver.dev < cur_ver.dev):
+                bump_icon = " 🚀"
             click.secho(
                 f"\n📁 {package} ({prev_ver} -> {cur_ver}{bump_icon})\n",
                 underline=True,
