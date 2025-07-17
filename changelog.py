@@ -21,21 +21,22 @@ Warning: this script makes many assumptions about tagging convention, commit mes
 etc. It is probably fit for Invenio packages, but not necessarily for other projects.
 """
 
-from packaging.utils import canonicalize_name
-from packaging.version import Version
-from pathlib import Path
-import appdirs
-from git import Repo, InvalidGitRepositoryError, Tag
-from urllib.parse import urlparse
 import json
-import click
 import re
 import textwrap
-import tomllib
+from pathlib import Path
+from urllib.parse import urlparse
 
+import appdirs
+import click
+import tomllib
+from git import InvalidGitRepositoryError, Repo, Tag
+from packaging.utils import canonicalize_name
+from packaging.version import Version
 
 CACHE_DIR = Path(appdirs.user_cache_dir("slint.changelog.py"))
 GIT_REPOS_DIR = CACHE_DIR / "git_repos"
+LOCKFILES = ("uv.lock", "Pipfile.lock", "requirements.txt")
 
 
 def find_repo(lockfile: Path, depth=2) -> Repo | None:
@@ -71,6 +72,13 @@ def deps_from_lockfile(lockfile: Path, data: str) -> dict[str, Version]:
                 deps[name] = version
 
     return {canonicalize_name(k): Version(v) for k, v in deps.items()}
+
+
+def is_major_bump(prev_ver: Version | None, cur_ver: Version) -> bool:
+    """Check if a version change is a major bump (breaking change)."""
+    if prev_ver is None:
+        return False
+    return prev_ver.major < cur_ver.major
 
 
 def diff_deps(
@@ -198,6 +206,11 @@ def get_package_repo(package: str) -> Repo:
     default=r"(tests?|chore)\:",
     help="A regular expression to filter commit message entries.",
 )
+@click.option(
+    "--show-major-bumps",
+    is_flag=True,
+    help="Show major version bumps (breaking changes) of all dependencies, even if they don't match the package filter.",
+)
 @click.option("--lockfile", default=None, help="The file to write the changelog to.")
 @click.option(
     "--output",
@@ -212,6 +225,7 @@ def main_cli(
     until,
     package_filter,
     message_filter,
+    show_major_bumps,
     output,
     cache_dir,
 ):
@@ -220,12 +234,9 @@ def main_cli(
         click.echo(CACHE_DIR)
         return
 
-    lockfile = lockfile or next(
-        (Path(p) for p in ("uv.lock", "Pipfile.lock", "requirements.txt") if Path(p).exists()),
-        None,
-    )
+    lockfile = lockfile or next((Path(p) for p in LOCKFILES if Path(p).exists()), None)
     if not lockfile:
-        raise click.UsageError("No lock file found (uv.lock, Pipfile.lock, or requirements.txt).")
+        raise click.UsageError(f"No lock file found ({','.join(LOCKFILES)}).")
 
     if not (repo := find_repo(lockfile)):
         raise click.ClickException("Could not find git repository of lockfile.")
@@ -234,10 +245,24 @@ def main_cli(
     message_filter = message_filter and re.compile(message_filter)
     package_filter = package_filter and re.compile(package_filter)
     issue_ref_regex = re.compile(r"(\(| )(#\d+)")
-    for package, (prev_ver, cur_ver) in changed_deps.items():
-        if package_filter and not package_filter.search(package):
-            continue
 
+    # Separate packages into filtered and major bumps
+    filtered_packages = []
+    major_bump_packages = []
+
+    for package, (prev_ver, cur_ver) in changed_deps.items():
+        if package_filter and package_filter.search(package):
+            # Package matches filter - show full changelog
+            filtered_packages.append((package, prev_ver, cur_ver))
+        elif show_major_bumps and is_major_bump(prev_ver, cur_ver):
+            # Package doesn't match filter but has major bump - show only bump info
+            major_bump_packages.append((package, prev_ver, cur_ver))
+        elif not package_filter:
+            # No filter specified - show all packages with changelog
+            filtered_packages.append((package, prev_ver, cur_ver))
+
+    # Process filtered packages with full changelog
+    for package, prev_ver, cur_ver in filtered_packages:
         try:
             repo_url, changes = generate_changelog(package, prev_ver, cur_ver)
             repo_name = urlparse(repo_url).path[1:].removesuffix(".git")
@@ -257,11 +282,17 @@ def main_cli(
                 bump_icon = " 🌈"
             elif prev_ver.micro < cur_ver.micro:
                 bump_icon = " 🐛"
-            elif (prev_ver.pre is not None and cur_ver.pre is not None and 
-                  prev_ver.pre < cur_ver.pre):
+            elif (
+                prev_ver.pre is not None
+                and cur_ver.pre is not None
+                and prev_ver.pre < cur_ver.pre
+            ):
                 bump_icon = " 🚀"
-            elif (prev_ver.dev is not None and cur_ver.dev is not None and 
-                  prev_ver.dev < cur_ver.dev):
+            elif (
+                prev_ver.dev is not None
+                and cur_ver.dev is not None
+                and prev_ver.dev < cur_ver.dev
+            ):
                 bump_icon = " 🚀"
             click.secho(
                 f"\n📁 {package} ({prev_ver} -> {cur_ver}{bump_icon})\n",
@@ -270,11 +301,28 @@ def main_cli(
             )
             changelist = textwrap.indent("\n".join(changes), "    ")
             changelist = "\n".join(
-                [l for l in changelist.splitlines() if "co-authored" not in l.lower()]
+                [
+                    line
+                    for line in changelist.splitlines()
+                    if "co-authored" not in line.lower()
+                ]
             )
             click.echo(changelist)
         except Exception as e:
             click.secho(f"Error generating changelog for {package}: {e}", err=True)
+
+    # Process major bump packages (show only bump info, no changelog)
+    if major_bump_packages:
+        click.secho(
+            "\n🚨 Major version bumps (potentially breaking changes):",
+            bold=True,
+            file=output,
+        )
+        for package, prev_ver, cur_ver in major_bump_packages:
+            click.secho(
+                f"📁 {package} ({prev_ver} -> {cur_ver} ⚠️)",
+                file=output,
+            )
 
 
 if __name__ == "__main__":
