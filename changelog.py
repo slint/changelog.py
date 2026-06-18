@@ -193,6 +193,7 @@ def repo_tag(repo: Repo, version: Version, fetch: bool = True) -> Tag | None:
         click.secho(f"Fetching {repo}...", fg="yellow", err=True)
         for remote in repo.remotes:
             remote.fetch("+refs/heads/*:refs/heads/*", filter="blob:none")
+            remote.fetch("+refs/tags/*:refs/tags/*", filter="blob:none")
         return repo_tag(repo, version, fetch=False)
 
 
