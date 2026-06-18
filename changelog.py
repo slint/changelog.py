@@ -204,25 +204,30 @@ def generate_changelog(
 ) -> tuple[str, list[str]]:
     res = []
     repo = get_package_repo(package)
-    repo_url = list(repo.remote("origin").urls)[0]
+    try:
+        repo_url = list(repo.remote("origin").urls)[0]
 
-    if prev_ver is None:
-        prev_tag = ""
-    else:
-        prev_tag = repo_tag(repo, prev_ver, fetch=fetch)
+        if prev_ver is None:
+            prev_tag = ""
+        else:
+            prev_tag = repo_tag(repo, prev_ver, fetch=fetch)
+            if not prev_tag:
+                raise ValueError(f"Tag for {prev_ver} not found in {repo_url}.")
+
+        cur_tag = repo_tag(repo, cur_ver, fetch=fetch)
+        if not cur_tag:
+            raise ValueError(f"Tag for {cur_ver} not found in {repo_url}.")
+
         if not prev_tag:
-            raise ValueError(f"Tag for {prev_ver} not found in {repo_url}.")
-
-    cur_tag = repo_tag(repo, cur_ver, fetch=fetch)
-    if not cur_tag:
-        raise ValueError(f"Tag for {cur_ver} not found in {repo_url}.")
-
-    if not prev_tag:
-        commit_range = f"{cur_tag}"
-    else:
-        commit_range = f"{prev_tag}...{cur_tag}"
-    for c in repo.iter_commits(commit_range):
-        res.append(c.message.strip())
+            commit_range = f"{cur_tag}"
+        else:
+            commit_range = f"{prev_tag}...{cur_tag}"
+        for c in repo.iter_commits(commit_range):
+            res.append(c.message.strip())
+    finally:
+        # Release the repo's file handles; leaking these across many packages
+        # exhausts the open-file limit (Errno 24).
+        repo.close()
     return repo_url, res
 
 
@@ -340,6 +345,113 @@ def run_normal_mode(
             )
 
 
+def bump_type(prev_ver: Version | None, cur_ver: Version) -> str:
+    """Classify a version change (mirrors the text-mode bump icons)."""
+    if prev_ver is None:
+        return "new"
+    if prev_ver.major < cur_ver.major:
+        return "major"
+    if prev_ver.minor < cur_ver.minor:
+        return "minor"
+    if prev_ver.micro < cur_ver.micro:
+        return "patch"
+    if prev_ver.pre is not None and cur_ver.pre is not None and prev_ver.pre < cur_ver.pre:
+        return "pre"
+    if prev_ver.dev is not None and cur_ver.dev is not None and prev_ver.dev < cur_ver.dev:
+        return "dev"
+    return "other"
+
+
+def run_json_mode(
+    repo: Repo,
+    lockfile: Path,
+    since: str | None,
+    until: str | None,
+    package_filter: re.Pattern | None,
+    message_filter: re.Pattern | None,
+    show_major_bumps: bool,
+    detect: bool,
+    fetch: bool,
+    output,
+) -> None:
+    """Emit changed dependencies as JSON, mirroring the text output.
+
+    Filtered packages carry their full changelog (and Alembic/mapping flags under
+    `--detect-migrations`); with `--show-major-bumps`, major bumps outside the
+    filter are included as version-only entries.
+    """
+    changed_deps = diff_deps(repo, lockfile, since, until)
+    issue_ref_regex = re.compile(r"(\(| )(#\d+)")
+    packages = []
+    for package, (prev_ver, cur_ver) in sorted(changed_deps.items()):
+        matched = package_filter is None or bool(package_filter.search(package))
+        major = is_major_bump(prev_ver, cur_ver)
+        if not matched and not (show_major_bumps and major):
+            continue
+        entry = {
+            "name": package,
+            "prev": str(prev_ver) if prev_ver is not None else None,
+            "cur": str(cur_ver),
+            "bump": bump_type(prev_ver, cur_ver),
+            "matched_filter": matched,
+        }
+        if matched:
+            pkg_repo = None
+            try:
+                pkg_repo = get_package_repo(package)
+                repo_url = list(pkg_repo.remote("origin").urls)[0]
+                entry["repo"] = repo_url
+                repo_name = urlparse(repo_url).path[1:].removesuffix(".git")
+
+                prev_tag = (
+                    repo_tag(pkg_repo, prev_ver, fetch=fetch)
+                    if prev_ver is not None
+                    else None
+                )
+                cur_tag = repo_tag(pkg_repo, cur_ver, fetch=fetch)
+                if prev_tag is not None:
+                    entry["prev_tag"] = prev_tag.name
+                if cur_tag is not None:
+                    entry["cur_tag"] = cur_tag.name
+
+                if cur_tag is not None:
+                    commit_range = (
+                        cur_tag.name
+                        if prev_tag is None
+                        else f"{prev_tag.name}...{cur_tag.name}"
+                    )
+                    changelog = []
+                    for c in pkg_repo.iter_commits(commit_range):
+                        msg = c.message.strip()
+                        if message_filter and message_filter.search(msg):
+                            continue
+                        msg = issue_ref_regex.sub(rf"\1{repo_name}\2", msg)
+                        msg = "\n".join(
+                            line
+                            for line in msg.splitlines()
+                            if "co-authored" not in line.lower()
+                        ).strip()
+                        if msg:
+                            changelog.append(msg)
+                    entry["changelog"] = changelog
+
+                if detect and prev_tag is not None and cur_tag is not None:
+                    changed = pkg_repo.git.diff(
+                        prev_tag.commit.hexsha, cur_tag.commit.hexsha, "--name-only"
+                    ).splitlines()
+                    entry["alembic"] = [p for p in changed if "/alembic/" in p]
+                    entry["mappings"] = [p for p in changed if "/mappings/" in p]
+            except Exception as e:
+                entry["error"] = str(e)
+                click.secho(f"Warning: failed on {package}: {e}", fg="yellow", err=True)
+            finally:
+                if pkg_repo is not None:
+                    pkg_repo.close()
+        packages.append(entry)
+    json.dump({"since": since, "until": until, "packages": packages}, output, indent=2)
+    output.write("\n")
+
+
 @click.command()
 @click.argument(
     "lockfile",
@@ -377,6 +489,14 @@ def run_normal_mode(
 )
 @click.option("--fetch", is_flag=True, help="Fetch the latest commits.")
 @click.option("--cache-dir", is_flag=True, help="Print the cache directory.")
+@click.option(
+    "--json", "as_json", is_flag=True, help="Output changed dependencies as JSON."
+)
+@click.option(
+    "--detect-migrations",
+    is_flag=True,
+    help="In JSON mode, detect Alembic/mapping changes per package (clones repos).",
+)
 def main_cli(
     lockfile,
     since,
@@ -388,6 +508,8 @@ def main_cli(
     unreleased,
     fetch,
     cache_dir,
+    as_json,
+    detect_migrations,
 ):
     """Run the changelog generator."""
     if cache_dir:
@@ -405,7 +527,20 @@ def main_cli(
     package_filter = package_filter and re.compile(package_filter)
 
     # Dispatch to appropriate mode
-    if unreleased:
+    if as_json:
+        run_json_mode(
+            repo,
+            lockfile,
+            since,
+            until,
+            package_filter,
+            message_filter,
+            show_major_bumps,
+            detect_migrations,
+            fetch,
+            output,
+        )
+    elif unreleased:
         run_unreleased_mode(lockfile, package_filter, message_filter, fetch, output)
     else:
         run_normal_mode(repo, lockfile, since, until, package_filter, message_filter, show_major_bumps, output)
