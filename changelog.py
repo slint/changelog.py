@@ -179,7 +179,7 @@ def get_unreleased_deps(
 
 
 def repo_tag(repo: Repo, version: Version, fetch: bool = True) -> Tag | None:
-    """Get the version of a tag in the repository."""
+    """Return the repository tag matching the requested version."""
     repo_tags = repo.tags
     for tag in (str(version), f"v{version}"):
         if tag in repo_tags:
@@ -190,7 +190,7 @@ def repo_tag(repo: Repo, version: Version, fetch: bool = True) -> Tag | None:
         if t.name.lstrip("v") == str(version):
             return t
     if fetch:
-        click.secho(f"Fetching {repo}...", fg="yellow", err=True)
+        click.secho(f"Fetching branches and tags for {repo}...", fg="yellow", err=True)
         for remote in repo.remotes:
             remote.fetch("+refs/heads/*:refs/heads/*", filter="blob:none")
             remote.fetch("+refs/tags/*:refs/tags/*", filter="blob:none")
@@ -444,7 +444,9 @@ def run_json_mode(
                     entry["mappings"] = [p for p in changed if "/mappings/" in p]
             except Exception as e:
                 entry["error"] = str(e)
-                click.secho(f"Warning: failed on {package}: {e}", fg="yellow", err=True)
+                click.secho(
+                    f"Warning: could not process {package}: {e}", fg="yellow", err=True
+                )
             finally:
                 if pkg_repo is not None:
                     pkg_repo.close()
