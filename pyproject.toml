@@ -1,0 +1,13 @@
+[build-system]
+requires = ["flit_core>=3.9,<4"]
+build-backend = "flit_core.buildapi"
+
+[project]
+name = "changelog"
+version = "0.1.0"
+description = "Generate a changelog summary from changes in Python dependencies."
+requires-python = ">=3.12"
+dependencies = ["appdirs", "click", "gitpython", "packaging"]
+
+[project.scripts]
+changelog-py = "changelog:main_cli"

@@ -1,13 +1,3 @@
-#!/usr/bin/env -S uv run
-# /// script
-# requires-python = ">=3.12"
-# dependencies = [
-#   "appdirs",
-#   "click",
-#   "gitpython",
-#   "packaging",
-# ]
-# ///
 """Changelog generator based on dependency changes.
 
 This script generates a changelog based on the upgraded dependencies tracked via a

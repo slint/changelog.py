@@ -10,25 +10,29 @@ if there are breaking changes, new features, bug fixes, etc.
 
 ## Installation
 
-Make sure you have [`uv`](https://docs.astral.sh/uv/getting-started/installation/) installed.
+With [`uv`](https://docs.astral.sh/uv/getting-started/installation/), install the
+`changelog-py` command from GitHub (no PyPI needed):
 
 ```bash
-# Clone this repo (or directly download `changelog.py`)
-git clone git@github.com:slint/changelog.py.git
-cd changelog.py
+# Install as a tool:
+uv tool install git+https://github.com/slint/changelog.py
 
-# Make sure `changelog.py` is in your PATH (e.g. via symlinking)
-ln -s "$(realpath changelog.py)" "$HOME/.local/bin/changelog.py"
+# ...or run it without installing:
+uvx --from git+https://github.com/slint/changelog.py changelog-py --help
+
+# ...or an editable install from a local clone (for development):
+git clone git@github.com:slint/changelog.py.git
+uv tool install -e ./changelog.py
 ```
 
 ## Usage
 
 ```bash
 # Running the following in a local clone of https://github.com/zenodo/zenodo-rdm
-changelog.py --package-filter "invenio" --since v7.3.0 --until v7.4.0
+changelog-py --package-filter "invenio" --since v7.3.0 --until v7.4.0
 
 # ...or e.g. if you have local changes
-changelog.py --package-filter "invenio" --since HEAD
+changelog-py --package-filter "invenio" --since HEAD
 ```
 
 ...will output:
